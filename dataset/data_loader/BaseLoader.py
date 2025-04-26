@@ -14,6 +14,7 @@ from scipy import signal
 from scipy import sparse
 from unsupervised_methods.methods import POS_WANG
 from unsupervised_methods import utils
+from tools.roi_segment.roi_identifier import Roi
 import math
 import multiprocessing as mp
 
@@ -30,6 +31,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
+
 
 class BaseLoader(Dataset):
     """The base class for data loading based on pytorch Dataset.
@@ -154,8 +156,8 @@ class BaseLoader(Dataset):
         elif np.issubdtype(frames.dtype, np.floating) and np.min(frames) >= 0.0 and np.max(frames) <= 1.0:
             processed_frames = [(np.round(frame * 255)).astype(np.uint8)[..., :3] for frame in frames]
         else:
-            raise Exception(f'Loaded frames are of an incorrect type or range of values! '\
-            + f'Received frames of type {frames.dtype} and range {np.min(frames)} to {np.max(frames)}.')
+            raise Exception(f'Loaded frames are of an incorrect type or range of values! ' \
+                            + f'Received frames of type {frames.dtype} and range {np.min(frames)} to {np.max(frames)}.')
         return np.asarray(processed_frames)
 
     def generate_pos_psuedo_labels(self, frames, fs=30):
@@ -199,12 +201,12 @@ class BaseLoader(Dataset):
         pos_bvp = signal.filtfilt(b, a, bvp.astype(np.double))
 
         # apply hilbert normalization to normalize PPG amplitude
-        analytic_signal = signal.hilbert(pos_bvp) 
-        amplitude_envelope = np.abs(analytic_signal) # derive envelope signal
-        env_norm_bvp = pos_bvp/amplitude_envelope # normalize by env
+        analytic_signal = signal.hilbert(pos_bvp)
+        amplitude_envelope = np.abs(analytic_signal)  # derive envelope signal
+        env_norm_bvp = pos_bvp / amplitude_envelope  # normalize by env
 
-        return np.array(env_norm_bvp) # return POS psuedo labels
-    
+        return np.array(env_norm_bvp)  # return POS psuedo labels
+
     def preprocess_dataset(self, data_dirs, config_preprocess, begin, end):
         """Parses and preprocesses all the raw data based on split.
 
@@ -216,7 +218,7 @@ class BaseLoader(Dataset):
         """
         data_dirs_split = self.split_raw_data(data_dirs, begin, end)  # partition dataset 
         # send data directories to be processed
-        file_list_dict = self.multi_process_manager(data_dirs_split, config_preprocess) 
+        file_list_dict = self.multi_process_manager(data_dirs_split, config_preprocess)
         self.build_file_list(file_list_dict)  # build file list
         self.load_preprocessed_data()  # load all data and corresponding labels (sorted for consistency)
         print("Total Number of raw files preprocessed:", len(data_dirs_split), end='\n\n')
@@ -233,7 +235,7 @@ class BaseLoader(Dataset):
             bvps_clips(np.array): processed bvp (ppg) labels by frames
         """
         # resize frames and crop for face region
-        frames = self.crop_face_resize(
+        frames = self._call_crop_face_resize(
             frames,
             config_preprocess.CROP_FACE.DO_CROP_FACE,
             config_preprocess.CROP_FACE.BACKEND,
@@ -290,7 +292,7 @@ class BaseLoader(Dataset):
             # Use OpenCV's Haar Cascade algorithm implementation for face detection
             # This should only utilize the CPU
             detector = cv2.CascadeClassifier(
-            './dataset/haarcascade_frontalface_default.xml')
+                './dataset/haarcascade_frontalface_default.xml')
 
             # Computed face_zone(s) are in the form [x_coord, y_coord, width, height]
             # (x,y) corresponds to the top-left corner of the zone to define using
@@ -307,7 +309,7 @@ class BaseLoader(Dataset):
                 face_box_coor = face_zone[max_width_index]
                 print("Warning: More than one faces are detected. Only cropping the biggest one.")
             else:
-                face_box_coor = face_zone[0]     
+                face_box_coor = face_zone[0]
         elif "Y5F" in backend:
             # Use a YOLO5Face trained on WiderFace dataset
             # This utilizes both the CPU and GPU
@@ -349,8 +351,30 @@ class BaseLoader(Dataset):
             face_box_coor[3] = larger_box_coef * face_box_coor[3]
         return face_box_coor
 
-    def crop_face_resize(self, frames, use_face_detection, backend, use_larger_box, larger_box_coef, use_dynamic_detection, 
-                         detection_freq, use_median_box, width, height):
+    def _call_crop_face_resize(self, frames, do_crop_face, backend, use_larger_box, larger_box_coef,
+                               use_dynamic_detection, detection_freq, use_median_box, width, height):
+        if backend == 'DL':
+            self.save_multi_process = self.save_multi_process_rois
+            return self.crop_rois_face_resize(frames, width=width, height=height)
+        else:
+            self.save_multi_process = self.save_multi_process_default
+
+            return self.crop_full_face_resize(
+                frames,
+                do_crop_face,
+                backend,
+                use_larger_box,
+                larger_box_coef,
+                use_dynamic_detection,
+                detection_freq,
+                use_median_box,
+                width,
+                height
+            )
+
+    def crop_full_face_resize(self, frames, use_face_detection, backend, use_larger_box, larger_box_coef,
+                              use_dynamic_detection,
+                              detection_freq, use_median_box, width, height):
         """Crop face and resize frames.
 
         Args:
@@ -377,7 +401,8 @@ class BaseLoader(Dataset):
         # Perform face detection by num_dynamic_det" times.
         for idx in range(num_dynamic_det):
             if use_face_detection:
-                face_region_all.append(self.face_detection(frames[detection_freq * idx], backend, use_larger_box, larger_box_coef))
+                face_region_all.append(
+                    self.face_detection(frames[detection_freq * idx], backend, use_larger_box, larger_box_coef))
             else:
                 face_region_all.append([0, 0, frames.shape[1], frames.shape[2]])
         face_region_all = np.asarray(face_region_all, dtype='int')
@@ -403,6 +428,28 @@ class BaseLoader(Dataset):
                         max(face_region[0], 0):min(face_region[0] + face_region[2], frame.shape[1])]
             resized_frames[i] = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
         return resized_frames
+
+    def crop_rois_face_resize(self, frames, width, height):
+        """Crop ROIs and resize frames."""
+        # Face Cropping
+        roi_object = Roi()
+        # Frame Resizing
+        resized_frames_rois = []
+        for i in range(0, frames.shape[0]):
+            frame = frames[i]
+            rois = []
+            try:
+                roi_object.reset_landmark(frame)
+                extracted_rois = roi_object.extract_rois(frame)
+            except Exception as e:
+                print(e)
+                continue
+            for roi in extracted_rois:
+                resized_roi = cv2.resize(roi, (width, height), interpolation=cv2.INTER_AREA)
+                rois.append(resized_roi)
+            resized_frames_rois.append(rois)
+
+        return resized_frames_rois
 
     def chunk(self, frames, bvps, chunk_length):
         """Chunk the data into small chunks.
@@ -446,7 +493,7 @@ class BaseLoader(Dataset):
             count += 1
         return count
 
-    def save_multi_process(self, frames_clips, bvps_clips, filename):
+    def save_multi_process_default(self, frames_clips, bvps_clips, filename):
         """Save all the chunked data with multi-thread processing.
 
         Args:
@@ -470,6 +517,38 @@ class BaseLoader(Dataset):
             label_path_name_list.append(label_path_name)
             np.save(input_path_name, frames_clips[i])
             np.save(label_path_name, bvps_clips[i])
+            count += 1
+        return input_path_name_list, label_path_name_list
+
+    def save_multi_process_rois(self, frames_clips, bvps_clips, filename):
+        """Save all the chunked data with multi-thread processing.
+
+        Args:
+            frames_clips(np.array): blood volumne pulse (PPG) labels.
+            bvps_clips(np.array): the length of each chunk.
+            filename: name the filename
+        Returns:
+            input_path_name_list: list of input path names
+            label_path_name_list: list of label path names
+        """
+        if not os.path.exists(self.cached_path):
+            os.makedirs(self.cached_path, exist_ok=True)
+        count = 0
+        input_path_name_list = []
+        label_path_name_list = []
+        frames_clips = frames_clips.transpose(0, 2, 1, 3, 4, 5)
+        for i in range(len(bvps_clips)):
+            assert (len(self.inputs) == len(self.labels))
+            for j in range(1, 21):
+                input_path_name = self.cached_path + os.sep + "{0}-roi{2}_input{1}.npy".format(filename, str(count),
+                                                                                               str(j))
+                input_path_name_list.append(input_path_name)
+                np.save(input_path_name, frames_clips[i][j - 1])
+
+                label_path_name = self.cached_path + os.sep + "{0}-roi{2}_label{1}.npy".format(filename, str(count),
+                                                                                               str(j))
+                label_path_name_list.append(label_path_name)
+                np.save(label_path_name, bvps_clips[i])
             count += 1
         return input_path_name_list, label_path_name_list
 
@@ -500,8 +579,8 @@ class BaseLoader(Dataset):
             while process_flag:  # ensure that every i creates a process
                 if running_num < multi_process_quota:  # in case of too many processes
                     # send data to be preprocessing task
-                    p = mp.Process(target=self.preprocess_dataset_subprocess, 
-                                args=(data_dirs,config_preprocess, i, file_list_dict))
+                    p = mp.Process(target=self.preprocess_dataset_subprocess,
+                                   args=(data_dirs, config_preprocess, i, file_list_dict))
                     p.start()
                     p_list.append(p)
                     running_num += 1
