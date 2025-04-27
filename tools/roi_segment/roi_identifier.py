@@ -13,7 +13,7 @@ class Roi:
         self.landmarks = None
         self.ret = None
 
-    def _facial_landmarks(self, image: np.ndarray):
+    def _facial_landmarks(self, image: np.ndarray, face_points):
         """
         Detects faces in an image and extracts their corresponding facial landmarks.
 
@@ -34,22 +34,18 @@ class Roi:
             Returns `None` if no faces are detected in the image.
         """
         # If ret is not provided, use FACE_DETECTOR to calculate it
+        self.ret = dlib.rectangles()
+        for x, y, w, h in face_points:
+            self.ret.append(dlib.rectangle(int(x), int(y), int(x + w), int(y + h)))
 
-        ret = self.face_detector(image, 1)
-
-        if not ret:
-            return None, None
-
-        # Format ret to look like rectangles[[(x1, y1), (x2, y2)]]
-        # Extract facial landmarks
-        landmarks = [
+        self.landmarks = [
             np.matrix([[p.x, p.y] for p in self.classifier_dlib(image, r).parts()])
-            for r in ret
+            for r in self.ret
         ]
 
-        return landmarks, ret
+        return self.landmarks, self.ret
 
-    def extract_rois(self, frame: np.ndarray, roi_count: int = 21):
+    def extract_rois(self, frame: np.ndarray, face: np.ndarray, roi_count: int = 21):
         """
         Extracts all regions of interest (ROIs) from the image.
 
@@ -60,26 +56,8 @@ class Roi:
         Returns:
             List[np.ndarray]: List of extracted ROIs.
         """
+        self._facial_landmarks(frame, face)
         return [self._get_roi(frame, i) for i in range(1, roi_count + 1)]
-
-    def reset_landmark(self, image: np.ndarray):
-        """
-        Detects landmarks in the image.
-
-        Args:
-            image (np.ndarray): Input image.
-        """
-        faces = self.face_detector(image, 1)
-        if not faces:
-            self.landmarks = None
-            self.ret = None
-            return
-
-        self.landmarks, self.ret = self._facial_landmarks(image)
-
-    def get_landmarks(self):
-        """Returns the current landmarks safely."""
-        return self.landmarks, self.ret
 
     def _get_roi(self, image: np.ndarray, roi: int):
         """
