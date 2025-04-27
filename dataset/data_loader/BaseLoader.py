@@ -10,6 +10,7 @@ import glob
 import os
 import re
 from math import ceil
+
 from scipy import signal
 from scipy import sparse
 from unsupervised_methods.methods import POS_WANG
@@ -235,7 +236,7 @@ class BaseLoader(Dataset):
             bvps_clips(np.array): processed bvp (ppg) labels by frames
         """
         # resize frames and crop for face region
-        frames = self._call_crop_face_resize(
+        frames = self.crop_full_face(
             frames,
             config_preprocess.CROP_FACE.DO_CROP_FACE,
             config_preprocess.CROP_FACE.BACKEND,
@@ -288,7 +289,7 @@ class BaseLoader(Dataset):
         Returns:
             face_box_coor(List[int]): coordinates of face bouding box.
         """
-        if backend == "HC":
+        if "HC" in backend:
             # Use OpenCV's Haar Cascade algorithm implementation for face detection
             # This should only utilize the CPU
             detector = cv2.CascadeClassifier(
@@ -312,7 +313,7 @@ class BaseLoader(Dataset):
                 face_box_coor = face_zone[0]
         elif "Y5F" in backend:
             # Use a YOLO5Face trained on WiderFace dataset
-            # This utilizes both the CPU and GPU
+            # This uses both the CPU and GPU
 
             res = self.Y5FObj.detect_face(frame[:, :, :3].astype(np.uint8))
 
@@ -351,30 +352,8 @@ class BaseLoader(Dataset):
             face_box_coor[3] = larger_box_coef * face_box_coor[3]
         return face_box_coor
 
-    def _call_crop_face_resize(self, frames, do_crop_face, backend, use_larger_box, larger_box_coef,
-                               use_dynamic_detection, detection_freq, use_median_box, width, height):
-        if backend == 'DL':
-            self.save_multi_process = self.save_multi_process_rois
-            return self.crop_rois_face_resize(frames, width=width, height=height)
-        else:
-            self.save_multi_process = self.save_multi_process_default
-
-            return self.crop_full_face_resize(
-                frames,
-                do_crop_face,
-                backend,
-                use_larger_box,
-                larger_box_coef,
-                use_dynamic_detection,
-                detection_freq,
-                use_median_box,
-                width,
-                height
-            )
-
-    def crop_full_face_resize(self, frames, use_face_detection, backend, use_larger_box, larger_box_coef,
-                              use_dynamic_detection,
-                              detection_freq, use_median_box, width, height):
+    def crop_full_face(self, frames, use_face_detection, backend, use_larger_box, larger_box_coef,
+                       use_dynamic_detection, detection_freq, use_median_box, width, height):
         """Crop face and resize frames.
 
         Args:
@@ -410,10 +389,18 @@ class BaseLoader(Dataset):
             # Generate a median bounding box based on all detected face regions
             face_region_median = np.median(face_region_all, axis=0).astype('int')
 
-        # Frame Resizing
+        # Prepare output container
         total_frames, _, _, channels = frames.shape
-        resized_frames = np.zeros((total_frames, height, width, channels))
-        for i in range(0, total_frames):
+
+        if 'DLIB' in backend:
+            roi_object = Roi()  # Use ROI extraction class if using Deep Learning backend
+            resized_frames = []  # Use dynamic list to save memory
+        else:
+            # Pre-allocate array for better performance if not using DL backend
+            resized_frames = np.zeros((total_frames, height, width, channels))
+
+        # Process each frame
+        for i in range(total_frames):
             frame = frames[i]
             if use_dynamic_detection:  # use the (i // detection_freq)-th facial region.
                 reference_index = i // detection_freq
@@ -424,32 +411,22 @@ class BaseLoader(Dataset):
                     face_region = face_region_median
                 else:
                     face_region = face_region_all[reference_index]
-                frame = frame[max(face_region[1], 0):min(face_region[1] + face_region[3], frame.shape[0]),
-                        max(face_region[0], 0):min(face_region[0] + face_region[2], frame.shape[1])]
-            resized_frames[i] = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+            if 'DLIB' in backend:
+                # For DLIB backend: extract ROIs and resize
+                rois = roi_object.extract_rois(frame, face_region_all)
+                resized_rois = [cv2.resize(roi, (width, height), interpolation=cv2.INTER_AREA) for roi in rois]
+                resized_frames.append(resized_rois)
+                self.save_multi_process = self.save_multi_process_rois
+            else:
+                # For traditional backend: crop and resize manually
+                frame_cropped = frame[
+                                max(face_region[1], 0):min(face_region[1] + face_region[3], frame.shape[0]),
+                                max(face_region[0], 0):min(face_region[0] + face_region[2], frame.shape[1])
+                                ]
+                resized_frames[i] = cv2.resize(frame_cropped, (width, height), interpolation=cv2.INTER_AREA)
+                self.save_multi_process = self.save_multi_process_default
+
         return resized_frames
-
-    def crop_rois_face_resize(self, frames, width, height):
-        """Crop ROIs and resize frames."""
-        # Face Cropping
-        roi_object = Roi()
-        # Frame Resizing
-        resized_frames_rois = []
-        for i in range(0, frames.shape[0]):
-            frame = frames[i]
-            rois = []
-            try:
-                roi_object.reset_landmark(frame)
-                extracted_rois = roi_object.extract_rois(frame)
-            except Exception as e:
-                print(e)
-                continue
-            for roi in extracted_rois:
-                resized_roi = cv2.resize(roi, (width, height), interpolation=cv2.INTER_AREA)
-                rois.append(resized_roi)
-            resized_frames_rois.append(rois)
-
-        return resized_frames_rois
 
     def chunk(self, frames, bvps, chunk_length):
         """Chunk the data into small chunks.
@@ -521,16 +498,21 @@ class BaseLoader(Dataset):
         return input_path_name_list, label_path_name_list
 
     def save_multi_process_rois(self, frames_clips, bvps_clips, filename):
-        """Save all the chunked data with multi-thread processing.
+        """Save all chunked data with multi-threaded processing for multiple regions of interest (ROIs).
 
-        Args:
-            frames_clips(np.array): blood volumne pulse (PPG) labels.
-            bvps_clips(np.array): the length of each chunk.
-            filename: name the filename
-        Returns:
-            input_path_name_list: list of input path names
-            label_path_name_list: list of label path names
-        """
+         Args:
+             frames_clips (np.array): Array containing video frame clips organized by ROIs.
+                 Shape: [num_clips, num_rois, frames_per_clip, height, width, channels]
+             bvps_clips (np.array): Array containing blood volume pulse (BVP/PPG) signals.
+                 Shape: [num_clips, frames_per_clip]
+             filename (str): Base name to use when saving the files.
+                 Will be used to generate input/label filenames with ROI identifiers.
+
+         Returns:
+             tuple: Contains two lists:
+                 - input_path_name_list: Paths where input (frames) data was saved
+                 - label_path_name_list: Paths where label (BVP) data was saved
+         """
         if not os.path.exists(self.cached_path):
             os.makedirs(self.cached_path, exist_ok=True)
         count = 0
