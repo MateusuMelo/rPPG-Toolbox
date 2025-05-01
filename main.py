@@ -119,23 +119,7 @@ def test(config, data_loader_dict):
 def unsupervised_method_inference(config, data_loader):
     if not config.UNSUPERVISED.METHOD:
         raise ValueError("Please set unsupervised method in yaml!")
-    for unsupervised_method in config.UNSUPERVISED.METHOD:
-        if unsupervised_method == "POS":
-            unsupervised_predict(config, data_loader, "POS")
-        elif unsupervised_method == "CHROM":
-            unsupervised_predict(config, data_loader, "CHROM")
-        elif unsupervised_method == "ICA":
-            unsupervised_predict(config, data_loader, "ICA")
-        elif unsupervised_method == "GREEN":
-            unsupervised_predict(config, data_loader, "GREEN")
-        elif unsupervised_method == "LGI":
-            unsupervised_predict(config, data_loader, "LGI")
-        elif unsupervised_method == "PBV":
-            unsupervised_predict(config, data_loader, "PBV")
-        elif unsupervised_method == "OMIT":
-            unsupervised_predict(config, data_loader, "OMIT")
-        else:
-            raise ValueError("Not supported unsupervised method!")
+    unsupervised_predict(config, data_loader)
 
 
 if __name__ == "__main__":
