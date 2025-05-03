@@ -43,6 +43,80 @@ def _reform_data_from_dict(data, flatten=True):
     return sort_data
 
 
+def calculate_mae(y_true, y_pred):
+    return np.mean(np.abs(y_pred - y_true))
+
+
+def calculate_rmse(y_true, y_pred):
+    return np.sqrt(np.mean(np.square(y_pred - y_true)))
+
+
+def calculate_standard_error(y_true, y_pred, num_samples):
+    return np.std(np.abs(y_pred - y_true)) / np.sqrt(num_samples)
+
+
+def calculate_mape(y_true, y_pred):
+    return np.mean(np.abs((y_pred - y_true) / y_true))
+
+
+def calculate_pearson(y_true, y_pred):
+    return np.corrcoef(y_true, y_pred)
+
+def bvp_bpm_extract(prediction, label, config):
+    video_frame_size = prediction.shape[0]
+    gt_hr_all = list()
+    predict_hr_all = list()
+    SNR_all = list()
+    MACC_all = list()
+    if "unsupervised" in config.TOOLBOX_MODE:
+        FS = config.UNSUPERVISED.DATA.FS
+    else:
+        FS = config.TEST.DATA.FS
+
+    if config.INFERENCE.EVALUATION_WINDOW.USE_SMALLER_WINDOW:
+        window_frame_size = config.INFERENCE.EVALUATION_WINDOW.WINDOW_SIZE * FS
+        if window_frame_size > video_frame_size:
+            window_frame_size = video_frame_size
+    else:
+        window_frame_size = video_frame_size
+
+    for i in range(0, len(prediction), window_frame_size):
+        pred_window = prediction[i:i + window_frame_size]
+        label_window = label[i:i + window_frame_size]
+
+        if len(pred_window) < 9:
+            print(
+                f"Window frame size of {len(pred_window)} is smaller than minimum pad length of 9. Window ignored!")
+            continue
+
+        if (config.TEST.DATA.PREPROCESS.LABEL_TYPE == "Standardized" or
+                config.TEST.DATA.PREPROCESS.LABEL_TYPE == "Raw"):
+            diff_flag_test = False
+        elif config.TEST.DATA.PREPROCESS.LABEL_TYPE == "DiffNormalized":
+            diff_flag_test = True
+        elif config.UNSUPERVISED.DATA.PREPROCESS.LABEL_TYPE == "Raw":
+            diff_flag_test = False
+        else:
+            raise ValueError("Unsupported label type in testing!")
+
+        if config.INFERENCE.EVALUATION_METHOD == "peak detection":
+            gt_hr, pred_hr, SNR, macc = calculate_metric_per_video(
+                pred_window, label_window, diff_flag=diff_flag_test, fs=FS, hr_method='Peak')
+            gt_hr_all.append(gt_hr)
+            predict_hr_all.append(pred_hr)
+            SNR_all.append(SNR)
+            MACC_all.append(macc)
+        elif config.INFERENCE.EVALUATION_METHOD == "FFT":
+            gt_hr, pred_hr, SNR, macc = calculate_metric_per_video(
+                pred_window, label_window, diff_flag=diff_flag_test, fs=FS, hr_method='FFT')
+            gt_hr_all.append(gt_hr)
+            predict_hr_all.append(pred_hr)
+            SNR_all.append(SNR)
+            MACC_all.append(macc)
+        else:
+            raise ValueError("Inference evaluation method name wrong!")
+    return gt_hr_all, predict_hr_all, SNR_all, MACC_all
+
 def calculate_metrics(predictions, labels, config):
     """Calculate rPPG Metrics (MAE, RMSE, MAPE, Pearson Coef.)."""
     predict_hr_fft_all = list()
@@ -128,24 +202,23 @@ def calculate_metrics(predictions, labels, config):
         num_test_samples = len(predict_hr_fft_all)
         for metric in metrics:
             if metric == "MAE":
-                MAE_FFT = np.mean(np.abs(predict_hr_fft_all - gt_hr_fft_all))
-                standard_error = np.std(np.abs(predict_hr_fft_all - gt_hr_fft_all)) / np.sqrt(num_test_samples)
+                MAE_FFT = calculate_mae(gt_hr_fft_all, predict_hr_fft_all)
+                standard_error = calculate_standard_error(gt_hr_fft_all, predict_hr_fft_all, num_test_samples)
                 print("FFT MAE (FFT Label): {0} +/- {1}".format(MAE_FFT, standard_error))
             elif metric == "RMSE":
                 # Calculate the squared errors, then RMSE, in order to allow
                 # for a more robust and intuitive standard error that won't
                 # be influenced by abnormal distributions of errors.
-                squared_errors = np.square(predict_hr_fft_all - gt_hr_fft_all)
-                RMSE_FFT = np.sqrt(np.mean(squared_errors))
-                standard_error = np.sqrt(np.std(squared_errors) / np.sqrt(num_test_samples))
+
+                RMSE_FFT = calculate_rmse(gt_hr_fft_all, predict_hr_fft_all)
+                standard_error = calculate_standard_error(gt_hr_fft_all, predict_hr_fft_all, num_test_samples)
                 print("FFT RMSE (FFT Label): {0} +/- {1}".format(RMSE_FFT, standard_error))
             elif metric == "MAPE":
-                MAPE_FFT = np.mean(np.abs((predict_hr_fft_all - gt_hr_fft_all) / gt_hr_fft_all)) * 100
-                standard_error = np.std(np.abs((predict_hr_fft_all - gt_hr_fft_all) / gt_hr_fft_all)) / np.sqrt(
-                    num_test_samples) * 100
+                MAPE_FFT = calculate_mape(gt_hr_fft_all, predict_hr_fft_all) * 100
+                standard_error = calculate_standard_error(gt_hr_fft_all,predict_hr_fft_all,num_test_samples) * 100
                 print("FFT MAPE (FFT Label): {0} +/- {1}".format(MAPE_FFT, standard_error))
             elif metric == "Pearson":
-                Pearson_FFT = np.corrcoef(predict_hr_fft_all, gt_hr_fft_all)
+                Pearson_FFT = calculate_pearson(gt_hr_fft_all, predict_hr_fft_all)
                 correlation_coefficient = Pearson_FFT[0][1]
                 standard_error = np.sqrt((1 - correlation_coefficient ** 2) / (num_test_samples - 2))
                 print("FFT Pearson (FFT Label): {0} +/- {1}".format(correlation_coefficient, standard_error))
@@ -183,24 +256,23 @@ def calculate_metrics(predictions, labels, config):
         num_test_samples = len(predict_hr_peak_all)
         for metric in metrics:
             if metric == "MAE":
-                MAE_PEAK = np.mean(np.abs(predict_hr_peak_all - gt_hr_peak_all))
-                standard_error = np.std(np.abs(predict_hr_peak_all - gt_hr_peak_all)) / np.sqrt(num_test_samples)
+                MAE_PEAK = calculate_mae(gt_hr_peak_all, predict_hr_peak_all)
+                standard_error = calculate_standard_error(gt_hr_peak_all, predict_hr_peak_all, num_test_samples)
                 print("Peak MAE (Peak Label): {0} +/- {1}".format(MAE_PEAK, standard_error))
             elif metric == "RMSE":
                 # Calculate the squared errors, then RMSE, in order to allow
                 # for a more robust and intuitive standard error that won't
                 # be influenced by abnormal distributions of errors.
-                squared_errors = np.square(predict_hr_peak_all - gt_hr_peak_all)
-                RMSE_PEAK = np.sqrt(np.mean(squared_errors))
-                standard_error = np.sqrt(np.std(squared_errors) / np.sqrt(num_test_samples))
+
+                RMSE_PEAK = calculate_rmse(gt_hr_peak_all, predict_hr_peak_all)
+                standard_error = calculate_standard_error(gt_hr_peak_all, predict_hr_peak_all, num_test_samples)
                 print("PEAK RMSE (Peak Label): {0} +/- {1}".format(RMSE_PEAK, standard_error))
             elif metric == "MAPE":
-                MAPE_PEAK = np.mean(np.abs((predict_hr_peak_all - gt_hr_peak_all) / gt_hr_peak_all)) * 100
-                standard_error = np.std(np.abs((predict_hr_peak_all - gt_hr_peak_all) / gt_hr_peak_all)) / np.sqrt(
-                    num_test_samples) * 100
+                MAPE_PEAK = calculate_mape(gt_hr_peak_all, predict_hr_peak_all)
+                standard_error = calculate_standard_error(gt_hr_peak_all, predict_hr_peak_all, num_test_samples) * 100
                 print("PEAK MAPE (Peak Label): {0} +/- {1}".format(MAPE_PEAK, standard_error))
             elif metric == "Pearson":
-                Pearson_PEAK = np.corrcoef(predict_hr_peak_all, gt_hr_peak_all)
+                Pearson_PEAK = calculate_pearson(gt_hr_peak_all, predict_hr_peak_all)
                 correlation_coefficient = Pearson_PEAK[0][1]
                 standard_error = np.sqrt((1 - correlation_coefficient ** 2) / (num_test_samples - 2))
                 print("PEAK Pearson (Peak Label): {0} +/- {1}".format(correlation_coefficient, standard_error))
