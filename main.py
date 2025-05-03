@@ -9,7 +9,7 @@ import torch
 from config import get_config
 from dataset import data_loader
 from neural_methods import trainer
-from unsupervised_methods.unsupervised_predictor import unsupervised_predict
+from unsupervised_methods.unsupervised_predictor import unsupervised_predict, unsupervised_roi_predict
 from torch.utils.data import DataLoader
 
 RANDOM_SEED = 100
@@ -119,7 +119,10 @@ def test(config, data_loader_dict):
 def unsupervised_method_inference(config, data_loader):
     if not config.UNSUPERVISED.METHOD:
         raise ValueError("Please set unsupervised method in yaml!")
-    unsupervised_predict(config, data_loader)
+    if "DLIB" in config.UNSUPERVISED.DATA.PREPROCESS.CROP_FACE.BACKEND:
+        unsupervised_roi_predict(config, data_loader)
+    else:
+        unsupervised_predict(config, data_loader)
 
 
 if __name__ == "__main__":
