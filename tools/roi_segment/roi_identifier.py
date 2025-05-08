@@ -13,6 +13,32 @@ class Roi:
         self.landmarks = None
         self.ret = None
 
+    def detect_faces(self, image: np.ndarray):
+        """
+        Detect faces in the image and return bounding boxes in (x, y, w, h) format.
+
+        Parameters
+        ----------
+        image : np.ndarray
+            The input image.
+
+        Returns
+        -------
+        list
+            A list of face bounding boxes [x, y, w, h].
+        """
+        detected = self.face_detector(image, 1)
+        face_bboxes = []
+
+        for rect in detected:
+            x = rect.left()
+            y = rect.top()
+            w = rect.right() - rect.left()
+            h = rect.bottom() - rect.top()
+            face_bboxes = [x, y, w, h]
+
+        return face_bboxes
+
     def _facial_landmarks(self, image: np.ndarray, face_points):
         """
         Detects faces in an image and extracts their corresponding facial landmarks.

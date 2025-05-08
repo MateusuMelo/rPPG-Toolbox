@@ -342,6 +342,9 @@ class BaseLoader(Dataset):
             else:
                 print("ERROR: No Face Detected")
                 face_box_coor = [0, 0, frame.shape[0], frame.shape[1]]
+        elif "DLIB" in backend:
+            roi_object = Roi()
+            face_box_coor = roi_object.detect_faces(frame)
         else:
             raise ValueError("Unsupported face detection backend!")
 
@@ -534,7 +537,7 @@ class BaseLoader(Dataset):
             count += 1
         return input_path_name_list, label_path_name_list
 
-    def multi_process_manager(self, data_dirs, config_preprocess, multi_process_quota=8):
+    def multi_process_manager(self, data_dirs, config_preprocess, multi_process_quota=3):
         """Allocate dataset preprocessing across multiple processes.
 
         Args:
