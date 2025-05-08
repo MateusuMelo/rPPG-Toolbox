@@ -4,7 +4,8 @@ import torch
 from evaluation.post_process import *
 from tqdm import tqdm
 from evaluation.BlandAltmanPy import BlandAltman
-
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.utils.validation import check_consistent_length
 
 def read_label(dataset):
     """Read manually corrected labels."""
@@ -43,12 +44,8 @@ def _reform_data_from_dict(data, flatten=True):
     return sort_data
 
 
-def calculate_mae(y_true, y_pred):
-    return np.mean(np.abs(y_pred - y_true))
-
-
 def calculate_rmse(y_true, y_pred):
-    return np.sqrt(np.mean(np.square(y_pred - y_true)))
+    return np.sqrt(mean_squared_error(y_true, y_pred))
 
 
 def calculate_standard_error(y_true, y_pred, num_samples):
@@ -56,7 +53,15 @@ def calculate_standard_error(y_true, y_pred, num_samples):
 
 
 def calculate_mape(y_true, y_pred):
-    return np.mean(np.abs((y_pred - y_true) / y_true))
+    check_consistent_length(y_true, y_pred)
+    y_true, y_pred = np.array(y_true), np.array(y_pred)
+
+    mask = y_true != 0
+    y_true = y_true[mask]
+    y_pred = y_pred[mask]
+    if len(y_true) == 0:
+        return np.nan
+    return np.mean(np.abs((y_true - y_pred) / y_true)) * 100
 
 
 def calculate_pearson(y_true, y_pred):
@@ -202,7 +207,7 @@ def calculate_metrics(predictions, labels, config):
         num_test_samples = len(predict_hr_fft_all)
         for metric in metrics:
             if metric == "MAE":
-                MAE_FFT = calculate_mae(gt_hr_fft_all, predict_hr_fft_all)
+                MAE_FFT = mean_absolute_error(gt_hr_fft_all, predict_hr_fft_all)
                 standard_error = calculate_standard_error(gt_hr_fft_all, predict_hr_fft_all, num_test_samples)
                 print("FFT MAE (FFT Label): {0} +/- {1}".format(MAE_FFT, standard_error))
             elif metric == "RMSE":
@@ -256,7 +261,7 @@ def calculate_metrics(predictions, labels, config):
         num_test_samples = len(predict_hr_peak_all)
         for metric in metrics:
             if metric == "MAE":
-                MAE_PEAK = calculate_mae(gt_hr_peak_all, predict_hr_peak_all)
+                MAE_PEAK = mean_absolute_error(gt_hr_peak_all, predict_hr_peak_all)
                 standard_error = calculate_standard_error(gt_hr_peak_all, predict_hr_peak_all, num_test_samples)
                 print("Peak MAE (Peak Label): {0} +/- {1}".format(MAE_PEAK, standard_error))
             elif metric == "RMSE":
