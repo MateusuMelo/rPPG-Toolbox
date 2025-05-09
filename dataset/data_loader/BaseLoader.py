@@ -524,7 +524,7 @@ class BaseLoader(Dataset):
         frames_clips = frames_clips.transpose(0, 2, 1, 3, 4, 5)
         for i in range(len(bvps_clips)):
             assert (len(self.inputs) == len(self.labels))
-            for j in range(1, 21):
+            for j in range(1, 22):
                 input_path_name = self.cached_path + os.sep + "{0}-roi{2}_input{1}.npy".format(filename, str(count),
                                                                                                str(j))
                 input_path_name_list.append(input_path_name)
